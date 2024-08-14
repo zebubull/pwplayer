@@ -5,4 +5,4 @@ edition = "2021"
 
 [dependencies]
 pipewire = "0.8.0"
-symphonia = { version = "0.5.4", features = ["mp3"] }
+symphonia = { version = "0.5.4", features = ["mp3", "flac"] }
