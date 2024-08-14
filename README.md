@@ -11,6 +11,7 @@ pwplayer exposes a unix-domain socket at `/tmp/pwplayer.sock` that can be used t
 - `pause` will pause playback
 - `toggle` will toggle playback
 - `volume [volume]` will set playback volume
+- `seek [time]` will seek to a certain time. Currently only supports seconds.
 - `done` will close the current connection
 - `quit` will terminate the player
 
