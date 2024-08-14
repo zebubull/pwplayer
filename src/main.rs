@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             }
             // TODO: actually use this
-            let volume = state_lock.get_volume();
+            let _volume = state_lock.get_volume();
             if let Some(time) = state_lock.get_seek() {
                 let _ = song.seek_time(time);
             }
