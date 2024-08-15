@@ -4,6 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use log::{debug, error, info, warn};
 use symphonia::core::units::Time;
 
 use crate::{
@@ -20,6 +21,7 @@ pub enum Command {
     Volume(f32),
     Seek(Time),
     Quit,
+    Skip,
 }
 
 impl FromStr for Command {
@@ -34,6 +36,7 @@ impl FromStr for Command {
             "toggle" => Ok(Self::Toggle),
             "quit" => Ok(Self::Quit),
             "done" => Ok(Self::Done),
+            "skip" => Ok(Self::Skip),
             "volume" | "vol" => {
                 let volume = parts.next().ok_or("Expected argument")?.parse()?;
                 Ok(Self::Volume(volume))
@@ -62,10 +65,13 @@ fn handle_client(
     loop {
         let data = client.read_string()?;
         let command: Command = match data.parse() {
-            Ok(c) => c,
+            Ok(c) => {
+                debug!("Received command from client: {c:?}");
+                c
+            }
             Err(e) => {
                 let e = format!("{e:?}");
-                eprintln!("Invalid command: {e}");
+                warn!("Invalid command from client: {e}");
                 client.send_message(&e)?;
                 continue;
             }
@@ -77,10 +83,10 @@ fn handle_client(
             Command::Toggle => {
                 state.lock().unwrap().toggle();
             }
-            Command::Volume(vol) => state.lock().unwrap().set_volume(vol),
             Command::Quit => return Ok(ControlFlow::Quit),
             Command::Done => return Ok(ControlFlow::Continue),
             Command::Seek(t) => state.lock().unwrap().seek_to(t),
+            Command::Volume(_) | Command::Skip => state.lock().unwrap().send(command),
         }
     }
 }
@@ -89,13 +95,17 @@ fn do_command_thread(state: Arc<Mutex<PlayerState>>) -> Result<(), Box<dyn Error
     let sock = UnixSocket::create("/tmp/pwplayer.sock")?;
     loop {
         match sock.accept() {
-            Ok(client) => match handle_client(client, state.clone()) {
-                // TODO: more elegant quit-out
-                Ok(ControlFlow::Quit) => std::process::exit(0),
-                Err(e) => eprintln!("Client error: {e:?}"),
-                _ => {}
-            },
-            Err(e) => eprintln!("Failed to accept client: {e:?}"),
+            Ok(client) => {
+                info!("Client connected");
+                match handle_client(client, state.clone()) {
+                    // TODO: more elegant quit-out
+                    Ok(ControlFlow::Quit) => std::process::exit(0),
+                    Err(e) => warn!("Client error: {e:?}"),
+                    _ => {}
+                }
+                info!("Client disconnected");
+            }
+            Err(e) => warn!("Failed to accept client: {e:?}"),
         }
     }
 }
@@ -103,6 +113,6 @@ fn do_command_thread(state: Arc<Mutex<PlayerState>>) -> Result<(), Box<dyn Error
 pub fn start_command_thread(state: Arc<Mutex<PlayerState>>) {
     std::thread::spawn(move || match do_command_thread(state) {
         Ok(()) => {}
-        Err(e) => eprintln!("Fatal error on command thread: {e:?}"),
+        Err(e) => error!("Fatal error on command thread: {e:?}"),
     });
 }

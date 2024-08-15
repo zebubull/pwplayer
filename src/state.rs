@@ -1,17 +1,21 @@
 use symphonia::core::units::Time;
 
+use crate::{command::Command, pw::PipewireLoopTx};
+
 pub struct PlayerState {
     paused: bool,
-    volume: f32,
+    volume: Option<f32>,
     seek_request: Option<Time>,
+    stream_tx: Option<PipewireLoopTx>,
 }
 
 impl PlayerState {
     pub fn new() -> Self {
         Self {
             paused: false,
-            volume: 1.0,
+            volume: Some(1.0),
             seek_request: None,
+            stream_tx: None,
         }
     }
 
@@ -32,11 +36,11 @@ impl PlayerState {
     }
 
     pub fn set_volume(&mut self, volume: f32) {
-        self.volume = volume;
+        self.volume = Some(volume);
     }
 
-    pub fn get_volume(&self) -> f32 {
-        self.volume
+    pub fn get_volume(&mut self) -> Option<f32> {
+        self.volume.take()
     }
 
     pub fn seek_to(&mut self, time: Time) {
@@ -45,5 +49,15 @@ impl PlayerState {
 
     pub fn get_seek(&mut self) -> Option<Time> {
         self.seek_request.take()
+    }
+
+    pub fn send(&self, command: Command) {
+        if let Some(ref tx) = self.stream_tx {
+            let _ = tx.send(command);
+        }
+    }
+
+    pub fn update_tx(&mut self, tx: PipewireLoopTx) {
+        self.stream_tx = Some(tx);
     }
 }
