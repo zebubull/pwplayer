@@ -38,8 +38,8 @@ impl FromStr for Command {
             "done" => Ok(Self::Done),
             "skip" => Ok(Self::Skip),
             "volume" | "vol" => {
-                let volume = parts.next().ok_or("Expected argument")?.parse()?;
-                Ok(Self::Volume(volume))
+                let volume: f32 = parts.next().ok_or("Expected argument")?.parse()?;
+                Ok(Self::Volume(volume / 100f32))
             }
             "seek" => {
                 // TODO: parse this better
@@ -78,15 +78,14 @@ fn handle_client(
         };
 
         match command {
-            Command::Play => state.lock().unwrap().play(),
-            Command::Pause => state.lock().unwrap().pause(),
-            Command::Toggle => {
-                state.lock().unwrap().toggle();
-            }
             Command::Quit => return Ok(ControlFlow::Quit),
             Command::Done => return Ok(ControlFlow::Continue),
             Command::Seek(t) => state.lock().unwrap().seek_to(t),
-            Command::Volume(_) | Command::Skip => state.lock().unwrap().send(command),
+            Command::Volume(_)
+            | Command::Skip
+            | Command::Play
+            | Command::Pause
+            | Command::Toggle => state.lock().unwrap().send(command),
         }
     }
 }

@@ -6,6 +6,7 @@ use symphonia::{
         errors::Error as SymphoniaError,
         formats::{FormatReader, SeekMode, SeekTo},
         io::MediaSourceStream,
+        meta::StandardTagKey,
         probe::Hint,
         units::Time,
     },
@@ -19,6 +20,7 @@ pub struct SongReader {
     pub rate: u32,
     reader: Box<dyn FormatReader>,
     track_id: u32,
+    pub name: Option<String>,
 }
 
 impl SongReader {
@@ -28,14 +30,30 @@ impl SongReader {
 
         let stream =
             MediaSourceStream::new(Box::new(File::open(path.as_ref())?), Default::default());
-        let reader = probe
-            .format(
-                &Hint::default(),
-                stream,
-                &Default::default(),
-                &Default::default(),
-            )?
-            .format;
+        let mut probed = probe.format(
+            &Hint::default(),
+            stream,
+            &Default::default(),
+            &Default::default(),
+        )?;
+
+        let name = if let Some(md) = probed.metadata.get().as_ref().and_then(|m| m.current()) {
+            let mut name = None;
+            for (i, tag) in md.tags().iter().enumerate() {
+                // println!("[{:0>2}] {: <20} : {}", i, tag.key, tag.value);
+                let _ = tag.std_key.and_then(|k| {
+                    if k == StandardTagKey::TrackTitle {
+                        name = Some(tag.value.to_string());
+                    }
+                    Some(())
+                });
+            }
+            name
+        } else {
+            None
+        };
+
+        let reader = probed.format;
 
         let track = reader.default_track().ok_or("File has no tracks")?;
         let decoder = codecs.make(&track.codec_params, &Default::default())?;
@@ -52,6 +70,7 @@ impl SongReader {
             rate,
             reader,
             track_id,
+            name,
         })
     }
 
@@ -88,5 +107,13 @@ impl SongReader {
         )?;
 
         Ok(())
+    }
+
+    pub fn check_metadata(&mut self) {
+        while !self.reader.metadata().is_latest() {
+            self.reader.metadata().pop();
+
+            if let Some(md) = self.reader.metadata().current() {}
+        }
     }
 }

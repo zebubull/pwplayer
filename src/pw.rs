@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     error::Error,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -19,6 +20,7 @@ use crate::{command::Command, song::SongReader, state::PlayerState};
 
 pub type PipewireLoopTx = channel::Sender<Command>;
 
+// TODO: Handle this better
 pub struct PipewireClient {
     mainloop: MainLoop,
     _context: Context,
@@ -50,6 +52,7 @@ impl PipewireClient {
     }
 
     pub fn attach_stream(&mut self, stream: PlayerStream) -> Result<(), Box<dyn Error>> {
+        // TODO: Create better wrapper for this
         let mut audio_info = spa::param::audio::AudioInfoRaw::new();
         audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
         audio_info.set_rate(stream.rate);
@@ -94,13 +97,15 @@ impl PipewireClient {
             let mainloop = self.mainloop.clone();
             move |c| match c {
                 Command::Volume(vol) => {
-                    let _ = stream
-                        .stream
-                        .set_control(sys::SPA_PROP_channelVolumes, &[vol, vol]);
+                    let vol = vol * vol * vol;
+                    stream.set_volume(vol);
                 }
                 Command::Skip => {
                     mainloop.quit();
                 }
+                Command::Play => stream.set_active(true),
+                Command::Pause => stream.set_active(false),
+                Command::Toggle => stream.toggle_active(),
                 _ => {}
             }
         });
@@ -121,6 +126,7 @@ pub struct PlayerStream {
     _listener: StreamListener<()>,
     rate: u32,
     channels: u32,
+    active: Cell<bool>,
 }
 
 impl PlayerStream {
@@ -141,7 +147,26 @@ impl PlayerStream {
             _listener,
             rate,
             channels,
+            active: true.into(),
         })
+    }
+
+    // See https://bootlin.com/blog/a-custom-pipewire-node/
+    pub fn set_volume(&self, volume: f32) {
+        // Cube volume because https://bugzilla.redhat.com/show_bug.cgi?id=502057
+        let _ = self
+            .stream
+            .set_control(sys::SPA_PROP_channelVolumes, &[volume, volume]);
+    }
+
+    pub fn set_active(&self, state: bool) {
+        self.active.set(state);
+        let _ = self.stream.set_active(state);
+    }
+
+    pub fn toggle_active(&self) {
+        let state = self.active.get();
+        self.set_active(!state);
     }
 
     fn on_process(
@@ -151,13 +176,12 @@ impl PlayerStream {
         mainloop: &MainLoop,
     ) {
         let mut state_lock = state.lock().unwrap();
-        if state_lock.is_paused() {
-            return;
-        }
         if let Some(time) = state_lock.get_seek() {
             let _ = song.seek_time(time);
         }
         drop(state_lock);
+
+        song.check_metadata();
 
         match stream.dequeue_buffer() {
             None => println!("no buffer!"),
