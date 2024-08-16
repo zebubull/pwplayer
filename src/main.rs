@@ -53,12 +53,21 @@ fn walk_dir<T: AsRef<Path>>(dir: T) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     Ok(files)
 }
 
+fn handle_input_path<T: AsRef<Path>>(path: T) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let md = std::fs::metadata(&path)?;
+    if md.is_file() {
+        Ok(vec![path.as_ref().to_owned()])
+    } else {
+        walk_dir(path)
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logger();
     pipewire::init();
     // TODO: better cli
     let dir = std::env::args().skip(1).next().expect("Invalid args");
-    let mut files = walk_dir(dir)?;
+    let mut files = handle_input_path(dir)?;
     // Shuffle for fun
     files.shuffle(&mut rand::thread_rng());
 
