@@ -73,6 +73,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b048fb63fd8b5923fc5aa7b340d8e156aec7ec02f0c78fa8a6ddc2613f6f71de"
 
 [[package]]
+name = "bufstream"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40e38929add23cdf8a366df9b0e088953150724bcbe5fc330b0d8eb3b328eec8"
+
+[[package]]
 name = "bytemuck"
 version = "1.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -523,6 +529,7 @@ dependencies = [
 name = "pwplayer"
 version = "0.1.0"
 dependencies = [
+ "bufstream",
  "log",
  "pipewire",
  "pretty_env_logger",

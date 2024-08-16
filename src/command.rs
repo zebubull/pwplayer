@@ -63,7 +63,7 @@ fn handle_client(
     state: Arc<Mutex<PlayerState>>,
 ) -> Result<ControlFlow, Box<dyn Error>> {
     loop {
-        let data = client.read_string()?;
+        let data = client.read_line()?;
         let command: Command = match data.parse() {
             Ok(c) => {
                 debug!("Received command from client: {c:?}");
