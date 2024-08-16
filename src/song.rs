@@ -39,7 +39,7 @@ impl SongReader {
 
         let name = if let Some(md) = probed.metadata.get().as_ref().and_then(|m| m.current()) {
             let mut name = None;
-            for (i, tag) in md.tags().iter().enumerate() {
+            for (_i, tag) in md.tags().iter().enumerate() {
                 // println!("[{:0>2}] {: <20} : {}", i, tag.key, tag.value);
                 let _ = tag.std_key.and_then(|k| {
                     if k == StandardTagKey::TrackTitle {
@@ -107,13 +107,5 @@ impl SongReader {
         )?;
 
         Ok(())
-    }
-
-    pub fn check_metadata(&mut self) {
-        while !self.reader.metadata().is_latest() {
-            self.reader.metadata().pop();
-
-            if let Some(md) = self.reader.metadata().current() {}
-        }
     }
 }

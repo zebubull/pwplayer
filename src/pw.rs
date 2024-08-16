@@ -181,8 +181,6 @@ impl PlayerStream {
         }
         drop(state_lock);
 
-        song.check_metadata();
-
         match stream.dequeue_buffer() {
             None => println!("no buffer!"),
             Some(mut buffer) => {
