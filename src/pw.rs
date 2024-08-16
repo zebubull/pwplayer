@@ -172,14 +172,15 @@ impl PlayerStream {
     fn on_process(
         stream: &StreamRef,
         song: &mut SongReader,
-        state: &Mutex<PlayerState>,
+        _state: &Mutex<PlayerState>,
         mainloop: &MainLoop,
     ) {
-        let mut state_lock = state.lock().unwrap();
-        if let Some(time) = state_lock.get_seek() {
-            let _ = song.seek_time(time);
-        }
-        drop(state_lock);
+        // TODO: Re-implement seeking
+        // let mut state_lock = state.lock().unwrap();
+        // if let Some(time) = state_lock.get_seek() {
+        //     let _ = song.seek_time(time);
+        // }
+        // drop(state_lock);
 
         match stream.dequeue_buffer() {
             None => println!("no buffer!"),
