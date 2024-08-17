@@ -1,11 +1,7 @@
-use std::{
-    cell::Cell,
-    error::Error,
-    io::ErrorKind,
-    rc::Rc,
-    sync::{Arc, RwLock},
-};
+use std::{cell::Cell, error::Error, io::ErrorKind, rc::Rc};
 
+use async_std::task;
+use futures::SinkExt;
 use log::{debug, error, warn};
 use pipewire::{
     self as pw, channel,
@@ -23,9 +19,8 @@ use pw::{properties::properties, spa};
 use spa::{pod::Pod, sys};
 
 use crate::{
-    command::Command,
+    command::{Command, Sender},
     song::{SongReader, SongReaderError},
-    state::PlayerState,
 };
 
 pub type PipewireLoopTx = channel::Sender<Command>;
@@ -35,19 +30,19 @@ pub struct PipewireClient {
     mainloop: MainLoop,
     _context: Context,
     loop_rx: Option<channel::Receiver<Command>>,
+    command_tx: Sender<Command>,
     core: Core,
     stream: Option<Rc<PlayerStream>>,
-    state: Arc<RwLock<PlayerState>>,
 }
 
 impl PipewireClient {
-    pub fn create(state: Arc<RwLock<PlayerState>>) -> Result<Self, Box<dyn Error>> {
+    pub fn create(mut command_tx: Sender<Command>) -> Result<Self, Box<dyn Error>> {
         let mainloop = MainLoop::new(None)?;
         let context = Context::new(&mainloop)?;
         let core = context.connect(None)?;
 
         let (loop_tx, loop_rx) = channel::channel();
-        state.write().unwrap().update_tx(loop_tx);
+        task::block_on(command_tx.send(Command::UpdatePwSender(loop_tx)))?;
 
         let client = Self {
             mainloop,
@@ -55,7 +50,7 @@ impl PipewireClient {
             core,
             stream: None,
             loop_rx: Some(loop_rx),
-            state,
+            command_tx,
         };
 
         Ok(client)
@@ -96,7 +91,7 @@ impl PipewireClient {
         // Update the command thread with the new tx so it can actually send us commands next song
         let (tx, rx) = channel::channel();
         self.loop_rx = Some(rx);
-        self.state.write().unwrap().update_tx(tx);
+        let _ = task::block_on(self.command_tx.send(Command::UpdatePwSender(tx)));
     }
 }
 

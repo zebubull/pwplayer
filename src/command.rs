@@ -1,7 +1,4 @@
-use std::{
-    str::FromStr,
-    sync::{Arc, RwLock},
-};
+use std::str::FromStr;
 
 use async_std::{
     io::{prelude::BufReadExt, BufReader},
@@ -10,23 +7,46 @@ use async_std::{
     stream::StreamExt,
     task,
 };
+use futures::{channel::mpsc, SinkExt};
 use log::{debug, warn};
 use symphonia::core::units::Time;
 
-use crate::state::PlayerState;
+use crate::pw::PipewireLoopTx;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+pub type Sender<T> = mpsc::UnboundedSender<T>;
+pub type Receiver<T> = mpsc::UnboundedReceiver<T>;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 pub enum Command {
+    // For pipewire thread
     Play,
     Pause,
     Toggle,
-    Done,
     Volume(f32),
     Seek(Time),
-    Quit,
     Skip,
+    // For this thread
+    UpdatePwSender(PipewireLoopTx),
+    // For application
+    Done,
+    Quit,
+}
+
+impl std::fmt::Debug for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Command::Play => write!(f, "Command::Play"),
+            Command::Pause => write!(f, "Command::Pause"),
+            Command::Toggle => write!(f, "Command::Toggle"),
+            Command::Volume(v) => write!(f, "Command::Volume({v})"),
+            Command::Seek(s) => write!(f, "Command::Seek({s:?})"),
+            Command::Skip => write!(f, "Command::Skip"),
+            Command::UpdatePwSender(_) => write!(f, "Command::UpdatePwSender(_)"),
+            Command::Done => write!(f, "Command::Done"),
+            Command::Quit => write!(f, "Command::Quit"),
+        }
+    }
 }
 
 impl FromStr for Command {
@@ -57,11 +77,28 @@ impl FromStr for Command {
     }
 }
 
-pub fn start_command_thread(state: Arc<RwLock<PlayerState>>) {
-    std::thread::spawn(move || task::block_on(accept_clients("/tmp/pwplayer.sock", state)));
+pub fn start_command_thread() -> Sender<Command> {
+    let (tx, rx) = mpsc::unbounded();
+    let tx_clone = tx.clone();
+    std::thread::spawn(move || task::block_on(accept_clients("/tmp/pwplayer.sock", tx_clone)));
+    std::thread::spawn(move || task::block_on(handle_messages(rx)));
+    tx
 }
 
-async fn accept_clients(path: impl AsRef<Path>, state: Arc<RwLock<PlayerState>>) -> Result<()> {
+async fn handle_messages(mut message_rx: Receiver<Command>) -> Result<()> {
+    let mut channel = None;
+    while let Some(msg) = message_rx.next().await {
+        match msg {
+            Command::UpdatePwSender(s) => channel = Some(s),
+            _ => {
+                let _ = channel.as_ref().map(|c| c.send(msg));
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn accept_clients(path: impl AsRef<Path>, message_tx: Sender<Command>) -> Result<()> {
     let _ = async_std::fs::remove_file(&path).await;
     let listener = UnixListener::bind(&path).await?;
     let mut incoming = listener.incoming();
@@ -69,9 +106,9 @@ async fn accept_clients(path: impl AsRef<Path>, state: Arc<RwLock<PlayerState>>)
     while let Some(stream) = incoming.next().await {
         let stream = stream?;
         debug!("New client connected");
-        let state = state.clone();
+        let tx_clone = message_tx.clone();
         task::spawn(async move {
-            if let Err(e) = handle_client(stream, state).await {
+            if let Err(e) = handle_client(stream, tx_clone).await {
                 warn!("Client error: {e:?}");
             }
         });
@@ -80,7 +117,7 @@ async fn accept_clients(path: impl AsRef<Path>, state: Arc<RwLock<PlayerState>>)
     Ok(())
 }
 
-async fn handle_client(stream: UnixStream, state: Arc<RwLock<PlayerState>>) -> Result<()> {
+async fn handle_client(stream: UnixStream, mut message_tx: Sender<Command>) -> Result<()> {
     let reader = BufReader::new(&stream);
     let mut lines = reader.lines();
 
@@ -101,7 +138,7 @@ async fn handle_client(stream: UnixStream, state: Arc<RwLock<PlayerState>>) -> R
             Command::Done => return Ok(()),
             Command::Quit => std::process::exit(0),
             Command::Seek(_c) => warn!("Seek not implemented"),
-            _ => state.read().unwrap().send(c),
+            _ => message_tx.send(c).await.unwrap(),
         }
     }
     Ok(())

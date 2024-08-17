@@ -1,19 +1,16 @@
 use std::{
     error::Error,
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
 };
 
 use log::{info, warn};
 use pw::{PipewireClient, PlayerStream};
 use rand::seq::SliceRandom;
 use song::SongReader;
-use state::PlayerState;
 
 mod command;
 mod pw;
 mod song;
-mod state;
 
 fn init_logger() {
     if std::env::var("RUST_LOG").is_err() {
@@ -70,9 +67,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Shuffle for fun
     files.shuffle(&mut rand::thread_rng());
 
-    let state = Arc::new(RwLock::new(PlayerState::new()));
-    let mut client = PipewireClient::create(state.clone())?;
-    command::start_command_thread(state.clone());
+    let tx = command::start_command_thread();
+    let mut client = PipewireClient::create(tx)?;
 
     for file in files {
         let file_pretty = file.display().to_string();

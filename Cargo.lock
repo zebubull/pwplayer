@@ -905,6 +905,7 @@ name = "pwplayer"
 version = "0.1.0"
 dependencies = [
  "async-std",
+ "futures",
  "log",
  "pipewire",
  "pretty_env_logger",
