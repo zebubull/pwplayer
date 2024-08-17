@@ -1,22 +1,32 @@
 use std::{
     cell::Cell,
     error::Error,
+    io::ErrorKind,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{Arc, RwLock},
 };
 
+use log::{debug, error, warn};
 use pipewire::{
     self as pw, channel,
     context::Context,
     core::Core,
     main_loop::MainLoop,
-    spa::pod::{serialize::PodSerializer, Object, Value},
+    spa::{
+        param::audio::{AudioFormat, AudioInfoRaw},
+        pod::{serialize::PodSerializer, Object, Value},
+        utils::Direction,
+    },
     stream::{Stream, StreamFlags, StreamListener, StreamRef},
 };
 use pw::{properties::properties, spa};
 use spa::{pod::Pod, sys};
 
-use crate::{command::Command, song::SongReader, state::PlayerState};
+use crate::{
+    command::Command,
+    song::{SongReader, SongReaderError},
+    state::PlayerState,
+};
 
 pub type PipewireLoopTx = channel::Sender<Command>;
 
@@ -27,17 +37,17 @@ pub struct PipewireClient {
     loop_rx: Option<channel::Receiver<Command>>,
     core: Core,
     stream: Option<Rc<PlayerStream>>,
-    state: Arc<Mutex<PlayerState>>,
+    state: Arc<RwLock<PlayerState>>,
 }
 
 impl PipewireClient {
-    pub fn create(state: Arc<Mutex<PlayerState>>) -> Result<Self, Box<dyn Error>> {
+    pub fn create(state: Arc<RwLock<PlayerState>>) -> Result<Self, Box<dyn Error>> {
         let mainloop = MainLoop::new(None)?;
         let context = Context::new(&mainloop)?;
         let core = context.connect(None)?;
 
         let (loop_tx, loop_rx) = channel::channel();
-        state.lock().unwrap().update_tx(loop_tx);
+        state.write().unwrap().update_tx(loop_tx);
 
         let client = Self {
             mainloop,
@@ -52,37 +62,8 @@ impl PipewireClient {
     }
 
     pub fn attach_stream(&mut self, stream: PlayerStream) -> Result<(), Box<dyn Error>> {
-        // TODO: Create better wrapper for this
-        let mut audio_info = spa::param::audio::AudioInfoRaw::new();
-        audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
-        audio_info.set_rate(stream.rate);
-        audio_info.set_channels(stream.channels);
-        let mut position = [0; spa::param::audio::MAX_CHANNELS];
-        position[0] = sys::SPA_AUDIO_CHANNEL_FL;
-        position[1] = sys::SPA_AUDIO_CHANNEL_FR;
-        audio_info.set_position(position);
-
-        let values: Vec<u8> = PodSerializer::serialize(
-            std::io::Cursor::new(Vec::new()),
-            &Value::Object(Object {
-                type_: sys::SPA_TYPE_OBJECT_Format,
-                id: sys::SPA_PARAM_EnumFormat,
-                properties: audio_info.into(),
-            }),
-        )
-        .unwrap()
-        .0
-        .into_inner();
-
-        let mut params = [Pod::from_bytes(&values).unwrap()];
-
-        stream.stream.connect(
-            spa::utils::Direction::Output,
-            None,
-            StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS | StreamFlags::RT_PROCESS,
-            &mut params,
-        )?;
-
+        let mut params = AudioParams::new(stream.rate, stream.channels);
+        stream.connect(&mut params)?;
         self.stream = Some(Rc::new(stream));
 
         Ok(())
@@ -115,8 +96,7 @@ impl PipewireClient {
         // Update the command thread with the new tx so it can actually send us commands next song
         let (tx, rx) = channel::channel();
         self.loop_rx = Some(rx);
-        let mut lock = self.state.lock().unwrap();
-        lock.update_tx(tx);
+        self.state.write().unwrap().update_tx(tx);
     }
 }
 
@@ -132,14 +112,13 @@ pub struct PlayerStream {
 impl PlayerStream {
     pub fn new(mut song: SongReader, client: &PipewireClient) -> Result<Self, Box<dyn Error>> {
         let mainloop = client.mainloop.clone();
-        let state = client.state.clone();
         let rate = song.rate;
         let channels = song.channels;
 
         let stream = create_playback_stream(&client.core, song.channels)?;
         let _listener = stream
             .add_local_listener()
-            .process(move |stream, _| Self::on_process(stream, &mut song, &state, &mainloop))
+            .process(move |stream, _| Self::on_process(stream, &mut song, &mainloop))
             .register()?;
 
         Ok(Self {
@@ -149,6 +128,14 @@ impl PlayerStream {
             channels,
             active: true.into(),
         })
+    }
+
+    pub fn connect(&self, params: &mut AudioParams) -> Result<(), Box<dyn Error>> {
+        let mut params = [Pod::from_bytes(&params.bytes).unwrap()];
+        let flags = StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS | StreamFlags::RT_PROCESS;
+        self.stream
+            .connect(Direction::Output, None, flags, &mut params)?;
+        Ok(())
     }
 
     // See https://bootlin.com/blog/a-custom-pipewire-node/
@@ -169,12 +156,7 @@ impl PlayerStream {
         self.set_active(!state);
     }
 
-    fn on_process(
-        stream: &StreamRef,
-        song: &mut SongReader,
-        _state: &Mutex<PlayerState>,
-        mainloop: &MainLoop,
-    ) {
+    fn on_process(stream: &StreamRef, song: &mut SongReader, mainloop: &MainLoop) {
         // TODO: Re-implement seeking
         // let mut state_lock = state.lock().unwrap();
         // if let Some(time) = state_lock.get_seek() {
@@ -195,8 +177,19 @@ impl PlayerStream {
                     let output_frame_count = slice.len() / stride;
                     let chunk = match song.next_chunk() {
                         Ok(chunk) => chunk,
+                        Err(SongReaderError::DecodeError(e)) => {
+                            warn!("Decoding error (not fatal): {e:?}");
+                            return;
+                        }
+                        Err(SongReaderError::IoError(e))
+                            if e.kind() == ErrorKind::UnexpectedEof =>
+                        {
+                            debug!("Song finished");
+                            mainloop.quit();
+                            return;
+                        }
                         Err(e) => {
-                            eprintln!("Decoding error: {e:?}");
+                            error!("Fatal error playing song: {e:?}");
                             mainloop.quit();
                             return;
                         }
@@ -233,4 +226,38 @@ fn create_playback_stream(core: &Core, channels: u32) -> Result<Stream, Box<dyn 
             *pw::keys::AUDIO_CHANNELS => format!("{channels}"),
         },
     )?)
+}
+
+pub struct AudioParams {
+    bytes: Vec<u8>,
+}
+
+impl AudioParams {
+    pub fn new(rate: u32, channels: u32) -> Self {
+        assert_eq!(channels, 2, "Only 2 channel tracks are supported");
+        let mut info = AudioInfoRaw::new();
+        info.set_format(AudioFormat::F32LE);
+        info.set_rate(rate);
+        info.set_channels(channels);
+
+        let mut position = [0; spa::param::audio::MAX_CHANNELS];
+        position[0] = sys::SPA_AUDIO_CHANNEL_FL;
+        position[1] = sys::SPA_AUDIO_CHANNEL_FR;
+        info.set_position(position);
+
+        let values: Vec<u8> = PodSerializer::serialize(
+            std::io::Cursor::new(vec![]),
+            &Value::Object(Object {
+                type_: sys::SPA_TYPE_OBJECT_Format,
+                id: sys::SPA_PARAM_EnumFormat,
+                properties: info.into(),
+            }),
+        )
+        // TODO: don't use unwrap
+        .unwrap()
+        .0
+        .into_inner();
+
+        Self { bytes: values }
+    }
 }

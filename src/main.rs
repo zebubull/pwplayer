@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, RwLock},
 };
 
 use log::{info, warn};
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Shuffle for fun
     files.shuffle(&mut rand::thread_rng());
 
-    let state = Arc::new(Mutex::new(PlayerState::new()));
+    let state = Arc::new(RwLock::new(PlayerState::new()));
     let mut client = PipewireClient::create(state.clone())?;
     command::start_command_thread(state.clone());
 

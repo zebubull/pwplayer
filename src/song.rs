@@ -13,6 +13,8 @@ use symphonia::{
     default,
 };
 
+pub type SongReaderError = SymphoniaError;
+
 pub struct SongReader {
     buffer: Option<RawSampleBuffer<f32>>,
     pub channels: u32,
@@ -74,14 +76,14 @@ impl SongReader {
         })
     }
 
-    pub fn next_chunk(&mut self) -> Result<&RawSampleBuffer<f32>, Box<dyn Error>> {
+    pub fn next_chunk(&mut self) -> Result<&RawSampleBuffer<f32>, SymphoniaError> {
         let packet = match self.reader.next_packet() {
             Ok(p) => p,
             Err(SymphoniaError::ResetRequired) => {
                 self.decoder.reset();
                 return self.next_chunk();
             }
-            Err(e) => Err(e)?,
+            Err(e) => return Err(e),
         };
 
         let decoded = self.decoder.decode(&packet)?;

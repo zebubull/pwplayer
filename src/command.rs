@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::{Arc, RwLock},
 };
 
 use log::{debug, error, info, warn};
@@ -60,7 +60,7 @@ enum ControlFlow {
 
 fn handle_client(
     mut client: UnixClient,
-    state: Arc<Mutex<PlayerState>>,
+    state: Arc<RwLock<PlayerState>>,
 ) -> Result<ControlFlow, Box<dyn Error>> {
     loop {
         let data = client.read_line()?;
@@ -80,17 +80,17 @@ fn handle_client(
         match command {
             Command::Quit => return Ok(ControlFlow::Quit),
             Command::Done => return Ok(ControlFlow::Continue),
-            Command::Seek(t) => state.lock().unwrap().seek_to(t),
+            Command::Seek(t) => state.write().unwrap().seek_to(t),
             Command::Volume(_)
             | Command::Skip
             | Command::Play
             | Command::Pause
-            | Command::Toggle => state.lock().unwrap().send(command),
+            | Command::Toggle => state.read().unwrap().send(command),
         }
     }
 }
 
-fn do_command_thread(state: Arc<Mutex<PlayerState>>) -> Result<(), Box<dyn Error>> {
+fn do_command_thread(state: Arc<RwLock<PlayerState>>) -> Result<(), Box<dyn Error>> {
     let sock = UnixSocket::create("/tmp/pwplayer.sock")?;
     loop {
         match sock.accept() {
@@ -109,7 +109,7 @@ fn do_command_thread(state: Arc<Mutex<PlayerState>>) -> Result<(), Box<dyn Error
     }
 }
 
-pub fn start_command_thread(state: Arc<Mutex<PlayerState>>) {
+pub fn start_command_thread(state: Arc<RwLock<PlayerState>>) {
     std::thread::spawn(move || match do_command_thread(state) {
         Ok(()) => {}
         Err(e) => error!("Fatal error on command thread: {e:?}"),
