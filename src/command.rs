@@ -1,16 +1,21 @@
 use std::{
-    error::Error,
     str::FromStr,
     sync::{Arc, RwLock},
 };
 
-use log::{debug, error, info, warn};
+use async_std::{
+    io::{prelude::BufReadExt, BufReader},
+    os::unix::net::{UnixListener, UnixStream},
+    path::Path,
+    stream::StreamExt,
+    task,
+};
+use log::{debug, warn};
 use symphonia::core::units::Time;
 
-use crate::{
-    state::PlayerState,
-    uds::{UnixClient, UnixSocket},
-};
+use crate::state::PlayerState;
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Command {
@@ -52,66 +57,52 @@ impl FromStr for Command {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ControlFlow {
-    Continue,
-    Quit,
+pub fn start_command_thread(state: Arc<RwLock<PlayerState>>) {
+    std::thread::spawn(move || task::block_on(accept_clients("/tmp/pwplayer.sock", state)));
 }
 
-fn handle_client(
-    mut client: UnixClient,
-    state: Arc<RwLock<PlayerState>>,
-) -> Result<ControlFlow, Box<dyn Error>> {
-    loop {
-        let data = client.read_line()?;
-        let command: Command = match data.parse() {
+async fn accept_clients(path: impl AsRef<Path>, state: Arc<RwLock<PlayerState>>) -> Result<()> {
+    let _ = async_std::fs::remove_file(&path).await;
+    let listener = UnixListener::bind(&path).await?;
+    let mut incoming = listener.incoming();
+
+    while let Some(stream) = incoming.next().await {
+        let stream = stream?;
+        debug!("New client connected");
+        let state = state.clone();
+        task::spawn(async move {
+            if let Err(e) = handle_client(stream, state).await {
+                warn!("Client error: {e:?}");
+            }
+        });
+    }
+
+    Ok(())
+}
+
+async fn handle_client(stream: UnixStream, state: Arc<RwLock<PlayerState>>) -> Result<()> {
+    let reader = BufReader::new(&stream);
+    let mut lines = reader.lines();
+
+    while let Some(line) = lines.next().await {
+        let line = line?;
+        let c: Command = match line.parse() {
             Ok(c) => {
-                debug!("Received command from client: {c:?}");
+                debug!("Recieved command: {c:?}");
                 c
             }
             Err(e) => {
-                let e = format!("{e:?}");
-                warn!("Invalid command from client: {e}");
-                client.send_message(&e)?;
+                warn!("Bad command from client: {e}");
                 continue;
             }
         };
 
-        match command {
-            Command::Quit => return Ok(ControlFlow::Quit),
-            Command::Done => return Ok(ControlFlow::Continue),
-            Command::Seek(t) => state.write().unwrap().seek_to(t),
-            Command::Volume(_)
-            | Command::Skip
-            | Command::Play
-            | Command::Pause
-            | Command::Toggle => state.read().unwrap().send(command),
+        match c {
+            Command::Done => return Ok(()),
+            Command::Quit => std::process::exit(0),
+            Command::Seek(_c) => warn!("Seek not implemented"),
+            _ => state.read().unwrap().send(c),
         }
     }
-}
-
-fn do_command_thread(state: Arc<RwLock<PlayerState>>) -> Result<(), Box<dyn Error>> {
-    let sock = UnixSocket::create("/tmp/pwplayer.sock")?;
-    loop {
-        match sock.accept() {
-            Ok(client) => {
-                info!("Client connected");
-                match handle_client(client, state.clone()) {
-                    // TODO: more elegant quit-out
-                    Ok(ControlFlow::Quit) => std::process::exit(0),
-                    Err(e) => warn!("Client error: {e:?}"),
-                    _ => {}
-                }
-                info!("Client disconnected");
-            }
-            Err(e) => warn!("Failed to accept client: {e:?}"),
-        }
-    }
-}
-
-pub fn start_command_thread(state: Arc<RwLock<PlayerState>>) {
-    std::thread::spawn(move || match do_command_thread(state) {
-        Ok(()) => {}
-        Err(e) => error!("Fatal error on command thread: {e:?}"),
-    });
+    Ok(())
 }

@@ -14,7 +14,6 @@ mod command;
 mod pw;
 mod song;
 mod state;
-mod uds;
 
 fn init_logger() {
     if std::env::var("RUST_LOG").is_err() {
