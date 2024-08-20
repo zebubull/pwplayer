@@ -1,5 +1,7 @@
 use std::{cell::Cell, error::Error, io::ErrorKind, rc::Rc};
 
+mod stream;
+
 use async_std::task;
 use futures::SinkExt;
 use log::{debug, error, warn};
@@ -14,6 +16,7 @@ use pipewire::{
         utils::Direction,
     },
     stream::{Stream, StreamFlags, StreamListener, StreamRef},
+    sys::pw_stream_update_properties,
 };
 use pw::{properties::properties, spa};
 use spa::{pod::Pod, sys};
@@ -73,6 +76,7 @@ impl PipewireClient {
             let mainloop = self.mainloop.clone();
             move |c| match c {
                 Command::Volume(vol) => {
+                    // Cube volume because https://bugzilla.redhat.com/show_bug.cgi?id=502057
                     let vol = vol * vol * vol;
                     stream.set_volume(vol);
                 }
@@ -86,6 +90,7 @@ impl PipewireClient {
             }
         });
 
+        stream.set_name("epic stream part 2");
         self.mainloop.run();
 
         // Update the command thread with the new tx so it can actually send us commands next song
@@ -125,6 +130,15 @@ impl PlayerStream {
         })
     }
 
+    pub fn set_name(&self, name: &str) {
+        let props = properties! {
+            *pw::keys::MEDIA_NAME => name,
+        };
+        unsafe {
+            pw_stream_update_properties(self.stream.as_raw_ptr(), props.dict().as_raw_ptr());
+        }
+    }
+
     pub fn connect(&self, params: &mut AudioParams) -> Result<(), Box<dyn Error>> {
         let mut params = [Pod::from_bytes(&params.bytes).unwrap()];
         let flags = StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS | StreamFlags::RT_PROCESS;
@@ -135,7 +149,6 @@ impl PlayerStream {
 
     // See https://bootlin.com/blog/a-custom-pipewire-node/
     pub fn set_volume(&self, volume: f32) {
-        // Cube volume because https://bugzilla.redhat.com/show_bug.cgi?id=502057
         let _ = self
             .stream
             .set_control(sys::SPA_PROP_channelVolumes, &[volume, volume]);
