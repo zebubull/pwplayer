@@ -5,20 +5,19 @@ use pipewire::{
     properties::properties,
     spa::{
         self,
-        param::audio::{AudioFormat, AudioInfoRaw},
-        pod::{
-            serialize::{GenError, PodSerializer},
-            Object, Value,
-        },
-        utils::result::SpaResult,
+        param::audio::AudioFormat,
+        pod::{serialize::GenError, Pod},
+        utils::{result::SpaResult, Direction},
     },
-    stream::{Stream as PwStream, StreamListener, StreamRef},
+    stream::{Stream as PwStream, StreamFlags, StreamListener, StreamRef},
 };
+
+use super::audio_info::AudioInfo;
 
 #[derive(Debug, Clone, Copy)]
 pub struct StreamMetadata {
-    rate: u32,
-    channels: u32,
+    pub rate: u32,
+    pub channels: u32,
 }
 
 pub struct Stream {
@@ -28,14 +27,7 @@ pub struct Stream {
 }
 
 impl Stream {
-    pub fn new<F>(
-        core: &Core,
-        metadata: StreamMetadata,
-        mut process_callback: F,
-    ) -> Result<Stream, pipewire::Error>
-    where
-        F: FnMut(&mut [f32]) -> usize + 'static,
-    {
+    pub fn new(core: &Core, metadata: StreamMetadata) -> Result<Stream, pipewire::Error> {
         assert_eq!(metadata.channels, 2, "Only 2 channel tracks are supported");
 
         let props = properties! {
@@ -46,12 +38,7 @@ impl Stream {
         };
 
         let stream = PwStream::new(core, "Stream", props)?;
-        let listener = stream
-            .add_local_listener()
-            .process(move |stream, _| {
-                stream_process_callback(stream, metadata, &mut process_callback)
-            })
-            .register()?;
+        let listener = stream.add_local_listener().register()?;
 
         debug!("Created stream: {metadata:?}");
 
@@ -60,6 +47,23 @@ impl Stream {
             stream,
             metadata,
         })
+    }
+
+    pub fn set_process_callback<F>(&mut self, mut callback: F) -> Result<(), pipewire::Error>
+    where
+        F: FnMut(&mut [f32]) -> usize + 'static,
+    {
+        let metadata = self.metadata.clone();
+        self._listener = self
+            .stream
+            .add_local_listener()
+            .process(move |stream, _| stream_process_callback(stream, metadata, &mut callback))
+            .register()
+            .map_err(|e| {
+                warn!("Failed to set process callback on stream: {e:?}");
+                e
+            })?;
+        Ok(())
     }
 
     pub fn set_active(&self, active: bool) -> Result<(), pipewire::Error> {
@@ -90,30 +94,33 @@ impl Stream {
             )
         };
 
-        SpaResult::from_c(res).into_sync_result()?;
+        SpaResult::from_c(res).into_sync_result().map_err(|e| {
+            warn!("Error setting stream name: {e:?}");
+            e
+        })?;
         Ok(())
     }
 
-    pub fn params(&self) -> Result<Vec<u8>, GenError> {
-        let mut info = AudioInfoRaw::new();
-        info.set_format(AudioFormat::F32LE);
-        info.set_rate(self.metadata.rate);
-        info.set_channels(self.metadata.channels);
+    pub fn connect(&self) -> Result<(), pipewire::Error> {
+        // TODO: No unwrap
+        let params = self.params().unwrap();
+        let mut params = [Pod::from_bytes(&params).unwrap()];
 
-        let mut positions = [0; spa::param::audio::MAX_CHANNELS];
-        positions[0] = spa::sys::SPA_AUDIO_CHANNEL_FL;
-        positions[1] = spa::sys::SPA_AUDIO_CHANNEL_FR;
-        info.set_position(positions);
-
-        PodSerializer::serialize(
-            std::io::Cursor::new(vec![]),
-            &Value::Object(Object {
-                type_: spa::sys::SPA_TYPE_OBJECT_Format,
-                id: spa::sys::SPA_PARAM_EnumFormat,
-                properties: info.into(),
-            }),
+        self.stream.connect(
+            Direction::Output,
+            None,
+            StreamFlags::AUTOCONNECT | StreamFlags::RT_PROCESS | StreamFlags::MAP_BUFFERS,
+            &mut params,
         )
-        .map(|data| data.0.into_inner())
+    }
+
+    pub fn params(&self) -> Result<Vec<u8>, GenError> {
+        AudioInfo::new(
+            self.metadata.rate,
+            self.metadata.channels,
+            AudioFormat::F32LE,
+        )
+        .serialize()
     }
 }
 

@@ -4,7 +4,7 @@ use std::{
 };
 
 use log::{info, warn};
-use pw::{PipewireClient, PlayerStream};
+use pw::PipewireClient;
 use rand::seq::SliceRandom;
 use song::SongReader;
 
@@ -97,9 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             song.rate
         );
 
-        let stream = PlayerStream::new(song, &client)?;
-        client.attach_stream(stream)?;
-        client.play_song();
+        let _ = client.play_song(song);
     }
 
     Ok(())

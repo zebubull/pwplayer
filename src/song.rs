@@ -1,7 +1,7 @@
 use std::{error::Error, fs::File, path::Path};
 use symphonia::{
     core::{
-        audio::RawSampleBuffer,
+        audio::SampleBuffer,
         codecs::Decoder,
         errors::Error as SymphoniaError,
         formats::{FormatReader, SeekMode, SeekTo},
@@ -16,7 +16,7 @@ use symphonia::{
 pub type SongReaderError = SymphoniaError;
 
 pub struct SongReader {
-    buffer: Option<RawSampleBuffer<f32>>,
+    buffer: Option<SampleBuffer<f32>>,
     pub channels: u32,
     decoder: Box<dyn Decoder>,
     pub rate: u32,
@@ -42,7 +42,6 @@ impl SongReader {
         let name = if let Some(md) = probed.metadata.get().as_ref().and_then(|m| m.current()) {
             let mut name = None;
             for (_i, tag) in md.tags().iter().enumerate() {
-                // println!("[{:0>2}] {: <20} : {}", i, tag.key, tag.value);
                 let _ = tag.std_key.and_then(|k| {
                     if k == StandardTagKey::TrackTitle {
                         name = Some(tag.value.to_string());
@@ -76,7 +75,7 @@ impl SongReader {
         })
     }
 
-    pub fn next_chunk(&mut self) -> Result<&RawSampleBuffer<f32>, SymphoniaError> {
+    pub fn next_chunk(&mut self) -> Result<&SampleBuffer<f32>, SymphoniaError> {
         let packet = match self.reader.next_packet() {
             Ok(p) => p,
             Err(SymphoniaError::ResetRequired) => {
@@ -89,7 +88,7 @@ impl SongReader {
         let decoded = self.decoder.decode(&packet)?;
 
         if self.buffer.is_none() {
-            let buffer = RawSampleBuffer::new(decoded.capacity() as u64, *decoded.spec());
+            let buffer = SampleBuffer::new(decoded.capacity() as u64, *decoded.spec());
             let _ = self.buffer.replace(buffer);
         }
 
